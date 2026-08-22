@@ -1,0 +1,150 @@
+*remote-ssh.txt*                                      Nvim
+
+                            NVIM REFERENCE MANUAL
+
+
+Remote SSH                                                *remote-ssh.nvim*
+
+1. Introduction                              |remote-ssh-introduction|
+2. Commands                                  |remote-ssh-commands|
+3. Configuration                             |remote-ssh-configuration|
+4. Remote environment                        |remote-ssh-environment|
+5. Requirements                              |remote-ssh-requirements|
+
+==============================================================================
+1. Introduction                                      *remote-ssh-introduction*
+
+remote-ssh.nvim connects the current Nvim UI to a headless Nvim server over
+SSH. Editing, plugins, LSP clients, and terminals run on the remote host. A
+single asynchronous SSH process bootstraps the server and carries the RPC
+tunnel.
+
+==============================================================================
+2. Commands                                              *remote-ssh-commands*
+
+                                                *:RemoteSSHConnect*
+:RemoteSSHConnect[!] [ssh://[user@]host[:port]]
+
+    Connect the current UI to a remote Nvim. Without an argument, select a
+    concrete Host declared directly in ~/.ssh/config. The command returns
+    immediately while SSH starts. Progress and failures are reported with
+    |vim.notify()|.
+
+    With [!], request password or keyboard-interactive authentication through
+    a trusted graphical askpass helper. Passwords are never accepted in the
+    URI, stored by the plugin, or placed in the SSH command line.
+
+                                                *:RemoteSSHCancel*
+:RemoteSSHCancel
+
+    Cancel a connection that has not attached the UI yet.
+
+                                                *remote-ssh-health*
+:checkhealth remote-ssh
+
+    Check the local Nvim and OpenSSH requirements.
+
+require('remote-ssh').logs() ~
+    Return a copy of the bounded diagnostic log from the active or most recent
+    connection attempt.
+
+==============================================================================
+3. Configuration                                   *remote-ssh-configuration*
+
+Setup is optional. Defaults are shown below: >lua
+
+    require('remote-ssh').setup({
+        ssh_command = 'ssh',
+        curl_command = 'curl',
+        askpass_command = '',
+        connect_timeout = 15,
+        startup_timeout = 120,
+        server_alive_interval = 15,
+        server_alive_count_max = 3,
+        remote_appname = 'nvim-remote',
+        log_limit = 200,
+        allow_external_ui = false,
+    })
+<
+
+ssh_command ~
+    OpenSSH executable name or path.
+
+curl_command ~
+    Local curl executable used to download the remote platform's matching
+    Nvim release archive. Downloads are cached below |stdpath()|('cache'). A
+    completed archive rejected during remote installation is discarded so the
+    next connection downloads it again.
+
+askpass_command ~
+    Trusted askpass executable used by |:RemoteSSHConnect!|. An empty value
+    uses a generated askpass helper when available or detects common
+    ssh-askpass programs.
+
+connect_timeout ~
+    SSH transport connection timeout in seconds.
+
+startup_timeout ~
+    Total remote bootstrap timeout in seconds.
+
+server_alive_interval, server_alive_count_max ~
+    OpenSSH keepalive settings for the persistent tunnel.
+
+remote_appname ~
+    Value assigned to |$NVIM_APPNAME| on the remote host.
+
+log_limit ~
+    Maximum number of in-memory diagnostic lines retained for the active or
+    most recent connection.
+
+allow_external_ui ~
+    Allow a UI configuration other than one builtin TUI. Unsupported UI
+    clients interpret |:connect| as |:detach|, so this is disabled by default.
+
+==============================================================================
+4. Remote environment                               *remote-ssh-environment*
+
+A stable Nvim 0.9 or newer is reused from the remote PATH when the local TUI's
+`api_level` is inside the remote Nvim's `[api_compatible, api_level]` range.
+This is the compatibility range guaranteed by Nvim's stable API contract.
+Nvim 0.9 introduced |$NVIM_APPNAME|. Different patch versions with the same
+compatible API level do not require another installation.
+Otherwise the local client downloads the exact local version from GitHub
+Releases, uploads it over the existing SSH connection, and installs it under: >text
+
+    ~/.local/share/nvim-remote/versions/v{version}/
+<
+
+The remote process uses `NVIM_APPNAME=nvim-remote`, which normally resolves to: >text
+
+    ~/.config/nvim-remote/
+    ~/.local/share/nvim-remote/
+<
+
+The installation and data persist after disconnect. The remote headless
+process, SSH process, and session RPC socket do not.
+
+Local configuration and plugins are not uploaded. Manage the isolated remote
+configuration on the remote host.
+
+==============================================================================
+5. Requirements                                       *remote-ssh-requirements*
+
+Local:
+- Nvim 0.12 or newer with |:connect|.
+- OpenSSH 8.7 or newer in PATH.
+- curl when a remote Nvim release archive must be downloaded locally.
+- Key/agent authentication, or a graphical askpass helper for passwords.
+
+Remote:
+- glibc-based Linux or macOS, x86_64 or arm64.
+- POSIX sh plus ps, tr, sed, uname, dirname, and tar.
+- Writable /tmp and home directories.
+
+Windows clients use a random loopback TCP endpoint and one persistent SSH
+process. Nvim RPC does not authenticate TCP clients, so Windows use is only
+appropriate on a trusted workstation. Unix clients use a local Unix domain
+socket.
+
+==============================================================================
+vim:tw=78:ts=4:ft=help:norl:

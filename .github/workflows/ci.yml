@@ -1,0 +1,64 @@
+name: CI
+
+on:
+    push:
+    pull_request:
+
+permissions:
+    contents: read
+
+jobs:
+    test:
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [ubuntu-latest, windows-latest, macos-latest]
+        runs-on: ${{ matrix.os }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Neovim
+              uses: rhysd/action-setup-vim@v1
+              with:
+                  version: v0.12.4
+                  neovim: true
+
+            - name: Run tests
+              run: nvim --headless --clean -u NONE --cmd "set runtimepath+=$PWD" -l tests/test.lua
+
+            - name: Check Vimdoc
+              run: |
+                  nvim --headless --clean -u NONE -c "helptags doc" -c qa
+                  git diff --exit-code -- doc/tags
+
+    lint:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Neovim
+              uses: rhysd/action-setup-vim@v1
+              with:
+                  version: v0.12.4
+                  neovim: true
+
+            - name: Check shell scripts
+              run: |
+                  bootstrap=$(mktemp)
+                  REMOTE_SSH_BOOTSTRAP="$bootstrap" nvim --headless --clean -u NONE \
+                      --cmd "set runtimepath+=$PWD" \
+                      -c "lua vim.fn.writefile(vim.split(require('remote-ssh.bootstrap').script(), '\\n', { plain = true }), vim.env.REMOTE_SSH_BOOTSTRAP, 'b')" \
+                      -c qa
+                  shellcheck -S warning -s sh "$bootstrap" tests/bootstrap_integration.sh
+
+            - name: Check Lua formatting
+              uses: JohnnyMorganz/stylua-action@v4
+              with:
+                  version: latest
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  args: --check lua plugin tests
+
+            - name: Check Markdown
+              uses: DavidAnson/markdownlint-cli2-action@v20
+              with:
+                  globs: README.md

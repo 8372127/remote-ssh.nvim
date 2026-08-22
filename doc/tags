@@ -1,0 +1,10 @@
+:RemoteSSHCancel	remote-ssh.txt	/*:RemoteSSHCancel*
+:RemoteSSHConnect	remote-ssh.txt	/*:RemoteSSHConnect*
+remote-ssh-commands	remote-ssh.txt	/*remote-ssh-commands*
+remote-ssh-configuration	remote-ssh.txt	/*remote-ssh-configuration*
+remote-ssh-environment	remote-ssh.txt	/*remote-ssh-environment*
+remote-ssh-health	remote-ssh.txt	/*remote-ssh-health*
+remote-ssh-introduction	remote-ssh.txt	/*remote-ssh-introduction*
+remote-ssh-requirements	remote-ssh.txt	/*remote-ssh-requirements*
+remote-ssh.nvim	remote-ssh.txt	/*remote-ssh.nvim*
+remote-ssh.txt	remote-ssh.txt	/*remote-ssh.txt*
