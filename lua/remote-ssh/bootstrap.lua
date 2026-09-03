@@ -9,7 +9,10 @@ version=$2
 local_api_level=$3
 appname=$4
 socket=$5
-bootstrap_file=$6
+preview_enabled=$6
+preview_keymap_hex=$7
+preview_max_size=$8
+bootstrap_file=$9
 
 rm -f "$bootstrap_file"
 
@@ -84,7 +87,7 @@ is_compatible() {
     done
     [ "$remote_api_prerelease" = false ] || return 1
 
-    if [ "$remote_major" -eq 0 ] && [ "$remote_minor" -lt 9 ]; then
+    if [ "$remote_major" -eq 0 ] && [ "$remote_minor" -lt 12 ]; then
         return 1
     fi
     [ "$remote_api_compatible" -le "$local_api_level" ] \
@@ -278,12 +281,235 @@ trap 'abort_before_server 143' TERM
 mkdir -p "$(dirname "$socket")"
 rm -f "$socket"
 child=
+preview_file=
+
+write_preview_bridge() {
+    preview_file=${bootstrap_file}.preview.lua
+    cat > "$preview_file" <<'REMOTE_SSH_PREVIEW_LUA'
+local token = vim.env.REMOTE_SSH_TOKEN or ''
+local function hex_decode(value)
+    if value == nil or value == '' or value == '-' then
+        return ''
+    end
+    if #value % 2 ~= 0 or value:find('[^0-9a-fA-F]') then
+        return ''
+    end
+    return (value:gsub('..', function(hex)
+        return string.char(tonumber(hex, 16))
+    end))
+end
+
+local keymap = hex_decode(vim.env.REMOTE_SSH_PREVIEW_KEYMAP_HEX)
+local max_size = tonumber(vim.env.REMOTE_SSH_PREVIEW_MAX_SIZE or '') or 104857600
+local chunk_size = 1048576
+local uv = vim.uv or vim.loop
+local preview_decisions = {}
+
+local allowed_extensions = {
+    aac = true,
+    apng = true,
+    avi = true,
+    bmp = true,
+    flac = true,
+    gif = true,
+    jpeg = true,
+    jpg = true,
+    m4a = true,
+    m4v = true,
+    mkv = true,
+    mov = true,
+    mp3 = true,
+    mp4 = true,
+    oga = true,
+    ogg = true,
+    ogv = true,
+    pdf = true,
+    png = true,
+    wav = true,
+    webm = true,
+    webp = true,
+}
+
+local function emit(kind, payload)
+    io.stdout:write('NVIM_REMOTE_PREVIEW_' .. kind .. ':' .. token .. ':' .. payload .. '\n')
+    io.stdout:flush()
+end
+
+local function json_string(value)
+    return '"' .. tostring(value):gsub('[%z\1-\31\\"]', function(char)
+        local replacements = {
+            ['"'] = '\\"',
+            ['\\'] = '\\\\',
+            ['\b'] = '\\b',
+            ['\f'] = '\\f',
+            ['\n'] = '\\n',
+            ['\r'] = '\\r',
+            ['\t'] = '\\t',
+        }
+        return replacements[char] or string.format('\\u%04x', char:byte())
+    end) .. '"'
+end
+
+local function json_object(fields)
+    local parts = {}
+    for index, field in ipairs(fields) do
+        local value = field[2]
+        if type(value) == 'number' then
+            value = tostring(value)
+        else
+            value = json_string(value)
+        end
+        parts[index] = json_string(field[1]) .. ':' .. value
+    end
+    return '{' .. table.concat(parts, ',') .. '}'
+end
+
+local function fail(id, message)
+    emit('ERROR', json_object({ { 'id', id }, { 'message', message } }))
+end
+
+function _G.RemoteSSHPreviewCached(id)
+    if type(id) == 'string' then
+        preview_decisions[id] = 'cached'
+    end
+end
+
+function _G.RemoteSSHPreviewDecision(id, cached)
+    if type(id) == 'string' then
+        preview_decisions[id] = cached == true and 'cached' or 'send'
+    end
+end
+
+local function extension(path)
+    return tostring(path or ''):match('%.([^.\\/]+)$')
+end
+
+local function preview(command)
+    local input = command.args
+    if input == nil or input == '' then
+        input = vim.api.nvim_buf_get_name(0)
+    else
+        local expanded = vim.fn.expand(input)
+        if expanded ~= '' then
+            input = expanded
+        end
+    end
+
+    local id = vim.fn.sha256(tostring(uv.hrtime()) .. ':' .. tostring(input)):sub(1, 16)
+    if input == '' then
+        fail(id, 'No file is available to preview')
+        return
+    end
+
+    local path = vim.fn.fnamemodify(input, ':p')
+    local ext = extension(path)
+    if not ext or not allowed_extensions[ext:lower()] then
+        fail(id, 'Remote preview is not enabled for this file type')
+        return
+    end
+
+    local stat, stat_error = uv.fs_stat(path)
+    if not stat then
+        fail(id, 'Unable to stat remote file: ' .. tostring(stat_error))
+        return
+    end
+    if stat.type ~= 'file' then
+        fail(id, 'Remote preview only supports regular files')
+        return
+    end
+    if stat.size > max_size then
+        fail(id, ('Remote preview is too large: %d bytes'):format(stat.size))
+        return
+    end
+
+    local mtime_sec = stat.mtime and stat.mtime.sec or 0
+    local mtime_nsec = stat.mtime and stat.mtime.nsec or 0
+    emit(
+        'START',
+        json_object({
+            { 'id', id },
+            { 'path', path },
+            { 'size', stat.size },
+            { 'mtime_sec', mtime_sec },
+            { 'mtime_nsec', mtime_nsec },
+        })
+    )
+    vim.wait(100, function()
+        return preview_decisions[id] ~= nil
+    end, 5)
+    local decision = preview_decisions[id]
+    preview_decisions[id] = nil
+    if decision == 'cached' then
+        emit('END', id)
+        return
+    end
+
+    local file, open_error = uv.fs_open(path, 'r', 0)
+    if not file then
+        fail(id, 'Unable to open remote file: ' .. tostring(open_error))
+        return
+    end
+
+    local offset = 0
+    while true do
+        local data, read_error = uv.fs_read(file, chunk_size, offset)
+        if read_error then
+            uv.fs_close(file)
+            fail(id, 'Unable to read remote file: ' .. tostring(read_error))
+            return
+        end
+        if not data or data == '' then
+            break
+        end
+        io.stdout:write('NVIM_REMOTE_PREVIEW_DATA:' .. token .. ':' .. id .. ':' .. #data .. '\n')
+        io.stdout:write(data)
+        io.stdout:flush()
+        offset = offset + #data
+    end
+
+    uv.fs_close(file)
+    emit('END', id)
+end
+
+local function keymap_path()
+    local ok, api = pcall(require, 'nvim-tree.api')
+    if ok and api.tree and api.tree.get_node_under_cursor then
+        local node_ok, node = pcall(api.tree.get_node_under_cursor)
+        if node_ok and node and node.absolute_path and node.absolute_path ~= '' then
+            return node.absolute_path
+        end
+    end
+    return vim.api.nvim_buf_get_name(0)
+end
+
+vim.api.nvim_create_user_command('RemoteSSHPreview', preview, {
+    nargs = '?',
+    complete = 'file',
+    desc = 'Preview a remote media file locally',
+    force = true,
+})
+
+if keymap ~= '' then
+    local ok, error_message = pcall(vim.keymap.set, 'n', keymap, function()
+        preview({ args = keymap_path() })
+    end, {
+        desc = 'Preview remote media file locally',
+        silent = true,
+    })
+    if not ok then
+        fail('', 'Unable to install remote preview keymap: ' .. tostring(error_message))
+    end
+end
+REMOTE_SSH_PREVIEW_LUA
+}
+
 cleanup() {
     if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
         kill "$child" 2>/dev/null || true
         wait "$child" 2>/dev/null || true
     fi
     rm -f "$socket"
+    [ -z "$preview_file" ] || rm -f "$preview_file"
     stop_watchdog
 }
 
@@ -300,7 +526,17 @@ trap 'abort 130' INT
 trap 'abort 143' TERM
 
 unset VIMRUNTIME
-NVIM_APPNAME="$appname" "$nvim_bin" --headless --listen "$socket" &
+if [ "$preview_enabled" = 1 ]; then
+    write_preview_bridge
+    NVIM_APPNAME="$appname" \
+        REMOTE_SSH_TOKEN="$token" \
+        REMOTE_SSH_PREVIEW_FILE="$preview_file" \
+        REMOTE_SSH_PREVIEW_KEYMAP_HEX="$preview_keymap_hex" \
+        REMOTE_SSH_PREVIEW_MAX_SIZE="$preview_max_size" \
+        "$nvim_bin" --headless --cmd 'lua dofile(vim.env.REMOTE_SSH_PREVIEW_FILE)' --listen "$socket" &
+else
+    NVIM_APPNAME="$appname" "$nvim_bin" --headless --listen "$socket" &
+fi
 child=$!
 
 attempt=0

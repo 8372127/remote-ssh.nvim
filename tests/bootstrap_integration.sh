@@ -67,7 +67,7 @@ run_bootstrap() {
         XDG_DATA_HOME="$root/data" \
         PATH="$tool_path" \
         REAL_BOOTSTRAP="$bootstrap" \
-            sh "$root/runner" "$1" 9.9.9 14 nvim-remote "$root/$1.sock" "$root/$1-bootstrap"
+            sh "$root/runner" "$1" 9.9.9 14 nvim-remote "$root/$1.sock" 1 - 104857600 "$root/$1-bootstrap"
 }
 
 run_bootstrap token-one > "$root/one.out" 2> "$root/one.err" &
@@ -114,7 +114,7 @@ XDG_DATA_HOME="$root/data" \
 PATH="$root/payload/nvim-test/bin:$tool_path" \
 REAL_BOOTSTRAP="$bootstrap" \
 FAKE_NVIM_METADATA=14:0:false:0:12:1 \
-    sh "$root/runner" token-compatible 9.9.9 14 nvim-compatible "$root/token-compatible.sock" \
+    sh "$root/runner" token-compatible 9.9.9 14 nvim-compatible "$root/token-compatible.sock" 1 - 104857600 \
         "$root/token-compatible-bootstrap" > "$root/compatible.out" 2> "$root/compatible.err"
 compatible_status=$?
 [ "$compatible_status" -eq 42 ] || { printf 'unexpected compatible remote status: %s\n' "$compatible_status" >&2; cat "$root/compatible.err" >&2; exit 31; }
@@ -126,7 +126,7 @@ XDG_DATA_HOME="$root/data" \
 PATH="$root/payload/nvim-test/bin:$tool_path" \
 REAL_BOOTSTRAP="$bootstrap" \
 FAKE_NVIM_METADATA=15:14:false:0:13:0 \
-    sh "$root/runner" token-newer-compatible 9.9.9 14 nvim-newer-compatible "$root/token-newer-compatible.sock" \
+    sh "$root/runner" token-newer-compatible 9.9.9 14 nvim-newer-compatible "$root/token-newer-compatible.sock" 1 - 104857600 \
         "$root/token-newer-compatible-bootstrap" > "$root/newer-compatible.out" 2> "$root/newer-compatible.err"
 newer_compatible_status=$?
 [ "$newer_compatible_status" -eq 42 ] || { printf 'unexpected newer compatible status: %s\n' "$newer_compatible_status" >&2; cat "$root/newer-compatible.err" >&2; exit 38; }
@@ -137,8 +137,20 @@ cat "$root/archive.tar.gz" | \
     XDG_DATA_HOME="$root/data" \
     PATH="$root/payload/nvim-test/bin:$tool_path" \
     REAL_BOOTSTRAP="$bootstrap" \
+    FAKE_NVIM_METADATA=14:0:false:0:11:9 \
+        sh "$root/runner" token-pre-floor 9.9.9 14 nvim-pre-floor "$root/token-pre-floor.sock" 1 - 104857600 \
+            "$root/token-pre-floor-bootstrap" > "$root/pre-floor.out" 2> "$root/pre-floor.err"
+pre_floor_status=$?
+[ "$pre_floor_status" -eq 42 ] || { printf 'unexpected pre-floor status: %s\n' "$pre_floor_status" >&2; cat "$root/pre-floor.err" >&2; exit 46; }
+grep -q '^NVIM_REMOTE_ASSET:token-pre-floor:' "$root/pre-floor.out" || { printf 'pre-0.12 compatible-looking remote was reused\n' >&2; exit 47; }
+
+cat "$root/archive.tar.gz" | \
+    HOME="$root/home" \
+    XDG_DATA_HOME="$root/data" \
+    PATH="$root/payload/nvim-test/bin:$tool_path" \
+    REAL_BOOTSTRAP="$bootstrap" \
     FAKE_NVIM_METADATA=13:0:false:0:11:4 \
-        sh "$root/runner" token-older-api 9.9.9 14 nvim-older-api "$root/token-older-api.sock" \
+        sh "$root/runner" token-older-api 9.9.9 14 nvim-older-api "$root/token-older-api.sock" 1 - 104857600 \
             "$root/token-older-api-bootstrap" > "$root/older-api.out" 2> "$root/older-api.err"
 older_api_status=$?
 [ "$older_api_status" -eq 42 ] || { printf 'unexpected older API status: %s\n' "$older_api_status" >&2; cat "$root/older-api.err" >&2; exit 40; }
@@ -150,11 +162,11 @@ cat "$root/archive.tar.gz" | \
     PATH="$root/payload/nvim-test/bin:$tool_path" \
     REAL_BOOTSTRAP="$bootstrap" \
     FAKE_NVIM_METADATA=6:0:false:0:8:3 \
-        sh "$root/runner" token-too-old 9.9.9 14 nvim-too-old "$root/token-too-old.sock" \
+        sh "$root/runner" token-too-old 9.9.9 14 nvim-too-old "$root/token-too-old.sock" 1 - 104857600 \
             "$root/token-too-old-bootstrap" > "$root/too-old.out" 2> "$root/too-old.err"
 too_old_status=$?
 [ "$too_old_status" -eq 42 ] || { printf 'unexpected old remote status: %s\n' "$too_old_status" >&2; cat "$root/too-old.err" >&2; exit 34; }
-grep -q '^NVIM_REMOTE_ASSET:token-too-old:' "$root/too-old.out" || { printf 'pre-0.9 remote was reused\n' >&2; exit 35; }
+grep -q '^NVIM_REMOTE_ASSET:token-too-old:' "$root/too-old.out" || { printf 'pre-0.12 remote was reused\n' >&2; exit 35; }
 
 cat "$root/archive.tar.gz" | \
     HOME="$root/home" \
@@ -162,7 +174,7 @@ cat "$root/archive.tar.gz" | \
     PATH="$root/payload/nvim-test/bin:$tool_path" \
     REAL_BOOTSTRAP="$bootstrap" \
     FAKE_NVIM_METADATA=14:0:true:0:12:0 \
-        sh "$root/runner" token-prerelease 9.9.9 14 nvim-prerelease "$root/token-prerelease.sock" \
+        sh "$root/runner" token-prerelease 9.9.9 14 nvim-prerelease "$root/token-prerelease.sock" 1 - 104857600 \
             "$root/token-prerelease-bootstrap" > "$root/prerelease.out" 2> "$root/prerelease.err"
 prerelease_status=$?
 [ "$prerelease_status" -eq 42 ] || { printf 'unexpected prerelease remote status: %s\n' "$prerelease_status" >&2; cat "$root/prerelease.err" >&2; exit 36; }
@@ -181,7 +193,7 @@ if [ "$signal_test" -eq 1 ]; then
         XDG_DATA_HOME="$root/data" \
         PATH="$tool_path" \
         REAL_BOOTSTRAP="$bootstrap" \
-            sh "$root/runner" token-archive-signal 9.9.8 14 nvim-cancel "$root/token-archive-signal.sock" \
+            sh "$root/runner" token-archive-signal 9.9.8 14 nvim-cancel "$root/token-archive-signal.sock" 1 - 104857600 \
                 "$root/token-archive-signal-bootstrap" < "$archive_fifo" > "$root/archive-signal.out" &
         archive_signal_parent=$!
 
@@ -210,7 +222,7 @@ if [ "$signal_test" -eq 1 ]; then
         PATH="$tool_path" \
         REAL_BOOTSTRAP="$bootstrap" \
         FAKE_NVIM_SIGNAL_PREFIX="$signal_prefix" \
-            sh "$root/runner" token-signal 9.9.9 14 nvim-remote "$root/token-signal.sock" "$root/token-signal-bootstrap" &
+            sh "$root/runner" token-signal 9.9.9 14 nvim-remote "$root/token-signal.sock" 1 - 104857600 "$root/token-signal-bootstrap" &
         signal_parent=$!
 
         signal_attempt=0

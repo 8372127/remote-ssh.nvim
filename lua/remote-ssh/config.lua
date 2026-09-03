@@ -11,6 +11,11 @@ local defaults = {
     remote_appname = 'nvim-remote',
     log_limit = 200,
     allow_external_ui = false,
+    preview = {
+        enabled = true,
+        keymap = '',
+        max_size = 100 * 1024 * 1024,
+    },
 }
 
 local options = vim.deepcopy(defaults)
@@ -57,6 +62,17 @@ function M.setup(user_options)
     assert_positive_integer('server_alive_count_max', candidate.server_alive_count_max)
     assert_positive_integer('log_limit', candidate.log_limit)
     assert(type(candidate.allow_external_ui) == 'boolean', 'allow_external_ui must be a boolean')
+    assert(type(candidate.preview) == 'table', 'preview must be a table')
+    for name in pairs(candidate.preview) do
+        assert(defaults.preview[name] ~= nil, 'unknown remote-ssh preview option: ' .. tostring(name))
+    end
+    assert(type(candidate.preview.enabled) == 'boolean', 'preview.enabled must be a boolean')
+    assert(
+        candidate.preview.keymap == nil
+            or (type(candidate.preview.keymap) == 'string' and not candidate.preview.keymap:find('[%z\1-\31\127]')),
+        'preview.keymap must be a string without control characters or nil'
+    )
+    assert_positive_integer('preview.max_size', candidate.preview.max_size)
     options = candidate
 end
 

@@ -4,6 +4,15 @@ local function shell_quote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
+local function hex_encode(value)
+    if value == nil or value == '' then
+        return '-'
+    end
+    return tostring(value or ''):gsub('.', function(char)
+        return string.format('%02x', char:byte())
+    end)
+end
+
 function M.allocate_endpoint(session_token)
     if vim.fn.has('win32') == 1 then
         local socket = assert(vim.uv.new_tcp())
@@ -102,6 +111,9 @@ function M.command(context)
     arguments[#arguments + 1] = tostring(context.api_level)
     arguments[#arguments + 1] = options.remote_appname
     arguments[#arguments + 1] = context.remote_socket
+    arguments[#arguments + 1] = options.preview.enabled and '1' or '0'
+    arguments[#arguments + 1] = hex_encode(options.preview.keymap)
+    arguments[#arguments + 1] = tostring(options.preview.max_size)
     return arguments
 end
 

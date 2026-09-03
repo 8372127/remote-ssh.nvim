@@ -39,6 +39,20 @@ tunnel.
 
     Cancel a connection that has not attached the UI yet.
 
+                                                *:RemoteSSHPreview*
+:RemoteSSHPreview [path]
+
+    Preview a remote media file on the local machine after the UI has attached
+    to a remote Nvim session. Without [path], preview the current buffer file.
+    The remote Nvim streams the file over the existing SSH connection with
+    binary chunks, and the local client opens the cached copy with the local
+    |vim.ui.open()|. This avoids a second SSH authentication prompt for
+    password-based connections. Unchanged files are opened from the local
+    cache. Set |remote-ssh-preview.keymap| to install a normal-mode mapping
+    inside each attached remote Nvim session. The mapping previews the
+    nvim-tree node under the cursor when nvim-tree is available, otherwise it
+    previews the current buffer file.
+
                                                 *remote-ssh-health*
 :checkhealth remote-ssh
 
@@ -64,6 +78,11 @@ Setup is optional. Defaults are shown below: >lua
         remote_appname = 'nvim-remote',
         log_limit = 200,
         allow_external_ui = false,
+        preview = {
+            enabled = true,
+            keymap = '',
+            max_size = 100 * 1024 * 1024,
+        },
     })
 <
 
@@ -101,14 +120,25 @@ allow_external_ui ~
     Allow a UI configuration other than one builtin TUI. Unsupported UI
     clients interpret |:connect| as |:detach|, so this is disabled by default.
 
+preview.enabled ~
+    Install |:RemoteSSHPreview| in the remote Nvim session.
+
+                                                        *remote-ssh-preview.keymap*
+preview.keymap ~
+    Optional normal-mode mapping installed in the remote Nvim session. Set to
+    an empty string to skip installing a mapping.
+
+preview.max_size ~
+    Maximum remote file size in bytes accepted by |:RemoteSSHPreview|.
+
 ==============================================================================
 4. Remote environment                               *remote-ssh-environment*
 
-A stable Nvim 0.9 or newer is reused from the remote PATH when the local TUI's
+A stable Nvim is reused from the remote PATH only when the local TUI's
 `api_level` is inside the remote Nvim's `[api_compatible, api_level]` range.
 This is the compatibility range guaranteed by Nvim's stable API contract.
-Nvim 0.9 introduced |$NVIM_APPNAME|. Different patch versions with the same
-compatible API level do not require another installation.
+Different patch versions with the same compatible API level do not require
+another installation.
 Otherwise the local client downloads the exact local version from GitHub
 Releases, uploads it over the existing SSH connection, and installs it under: >text
 

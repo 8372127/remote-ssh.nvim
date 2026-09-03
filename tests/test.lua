@@ -89,8 +89,17 @@ local script = require('remote-ssh.bootstrap').script()
 local wrapper = require('remote-ssh.bootstrap').wrapper()
 assert(script:find('NVIM_REMOTE_READY', 1, true), 'bootstrap emits a readiness marker')
 assert(script:find('NVIM_REMOTE_ASSET', 1, true), 'bootstrap requests a local release archive')
+assert(script:find('RemoteSSHPreview', 1, true), 'bootstrap installs the remote preview command')
+assert(script:find('NVIM_REMOTE_PREVIEW_', 1, true), 'bootstrap streams preview data over SSH stdout')
+assert(script:find('vim.fn.expand(input)', 1, true), 'remote preview expands file modifiers')
+assert(script:find('force = true', 1, true), 'remote preview command tolerates an existing command')
+assert(script:find('local chunk_size = 1048576', 1, true), 'remote preview uses larger binary chunks')
+assert(script:find('RemoteSSHPreviewDecision', 1, true), 'remote preview can skip cached files')
+assert(script:find('REMOTE_SSH_PREVIEW_KEYMAP_HEX', 1, true), 'bootstrap can install a remote preview keymap')
+assert(script:find('hex_decode', 1, true), 'bootstrap decodes shell-safe remote preview keymaps')
+assert(script:find("require, 'nvim-tree.api'", 1, true), 'preview keymap supports nvim-tree cursor paths')
 assert(script:find('vim.fn.api_info().version', 1, true), 'bootstrap reads official API compatibility metadata')
-assert(script:find('remote_minor" -lt 9', 1, true), 'bootstrap requires NVIM_APPNAME support')
+assert(script:find('remote_minor" -lt 12', 1, true), 'bootstrap requires a remote Neovim 0.12 floor')
 assert(script:find('remote_api_prerelease" = false', 1, true), 'bootstrap rejects unstable remote APIs')
 assert(script:find('remote_api_compatible" -le "$local_api_level', 1, true), 'bootstrap checks the remote API floor')
 assert(script:find('local_api_level" -le "$remote_api_level', 1, true), 'bootstrap checks the remote API ceiling')
@@ -148,6 +157,12 @@ end, 'askpass_command')
 fails(function()
     require('remote-ssh').setup({ curl_command = 'curl\ncommand' })
 end, 'curl_command')
+fails(function()
+    require('remote-ssh').setup({ preview = { unknown = true } })
+end, 'unknown remote%-ssh preview option')
+fails(function()
+    require('remote-ssh').setup({ preview = { keymap = 'bad\nkey' } })
+end, 'preview%.keymap')
 equal('nvim-remote', require('remote-ssh.config').get().remote_appname, 'invalid setup does not change options')
 local options_copy = require('remote-ssh.config').get()
 options_copy.remote_appname = 'mutated'
@@ -156,10 +171,29 @@ equal('nvim-remote', require('remote-ssh.config').get().remote_appname, 'configu
 local original_system = vim.system
 local original_cmd = vim.cmd
 local original_notify = vim.notify
+local original_ui_open = vim.ui.open
+local original_sockconnect = vim.fn.sockconnect
+local original_rpcnotify = vim.rpcnotify
 local notifications = {}
+local opened_paths = {}
+local rpc_requests = {}
 
 vim.notify = function(message, level)
     notifications[#notifications + 1] = { message = message, level = level }
+end
+vim.ui.open = function(path)
+    opened_paths[#opened_paths + 1] = path
+end
+vim.fn.sockconnect = function()
+    return 99
+end
+vim.rpcnotify = function(channel, method, name, args)
+    rpc_requests[#rpc_requests + 1] = {
+        args = args,
+        channel = channel,
+        method = method,
+        name = name,
+    }
 end
 
 local blocked_system_calls = 0
@@ -228,6 +262,14 @@ vim.cmd = function(command)
     attach_commands[#attach_commands + 1] = command
 end
 
+local function session_token_of(request)
+    for index, argument in ipairs(request.arguments) do
+        if argument == '--' then
+            return request.arguments[index + 6]
+        end
+    end
+end
+
 require('remote-ssh').connect('ssh://dev@example.com:2222')
 local request = pending[#pending]
 local separator_index
@@ -236,8 +278,11 @@ for index, argument in ipairs(request.arguments) do
         separator_index = index
     end
 end
-local session_token = assert(request.arguments[separator_index + 6])
+local session_token = assert(session_token_of(request))
 equal(tostring(vim.version().api_level), request.arguments[separator_index + 8], 'passes the local API level')
+equal('1', request.arguments[separator_index + 11], 'enables remote preview by default')
+equal('-', request.arguments[separator_index + 12], 'passes a shell-safe empty remote preview keymap by default')
+equal('104857600', request.arguments[separator_index + 13], 'passes the remote preview size limit')
 assert(request.writes[1]:find('NVIM_REMOTE_SCRIPT_END:' .. session_token, 1, true), 'sends a framed bootstrap')
 equal(true, request.options.stdin, 'keeps SSH stdin open for archive streaming')
 request.options.stdout(nil, 'noise\nNVIM_REMOTE_ASSET:' .. session_token .. ':nvim-linux-')
@@ -260,6 +305,60 @@ assert(
     'connection state machine attaches after the readiness marker'
 )
 equal('connect', attach_commands[1].cmd, 'uses the native :connect command')
+request.options.stdout(
+    nil,
+    'NVIM_REMOTE_PREVIEW_START:'
+        .. session_token
+        .. ':'
+        .. vim.json.encode({ id = 'preview1', path = '/tmp/image.png', size = 4, mtime_sec = 1, mtime_nsec = 2 })
+        .. '\n'
+)
+request.options.stdout(nil, 'NVIM_REMOTE_PREVIEW_DATA:' .. session_token .. ':preview1:4\n\137PNG\n')
+request.options.stdout(nil, 'NVIM_REMOTE_PREVIEW_END:' .. session_token .. ':preview1\n')
+assert(
+    vim.wait(1000, function()
+        return #opened_paths == 1
+    end),
+    'opens a completed remote preview on the local machine'
+)
+equal(4, vim.uv.fs_stat(opened_paths[1]).size, 'writes preview data to a local cache file')
+request.options.stdout(
+    nil,
+    'NVIM_REMOTE_PREVIEW_START:'
+        .. session_token
+        .. ':'
+        .. vim.json.encode({ id = 'preview2', path = '/tmp/audio.mp3', size = 5, mtime_sec = 3, mtime_nsec = 4 })
+        .. '\n'
+)
+request.options.stdout(nil, 'NVIM_REMOTE_PREVIEW_DATA:' .. session_token .. ':preview2:5\nab')
+request.options.stdout(nil, 'cdeNVIM_REMOTE_PREVIEW_END:' .. session_token .. ':preview2\n')
+assert(
+    vim.wait(1000, function()
+        return #opened_paths == 2
+    end),
+    'opens a remote preview when binary data is split across callbacks'
+)
+equal(5, vim.uv.fs_stat(opened_paths[2]).size, 'writes split binary preview data to a local cache file')
+request.options.stdout(
+    nil,
+    'NVIM_REMOTE_PREVIEW_START:'
+        .. session_token
+        .. ':'
+        .. vim.json.encode({ id = 'preview3', path = '/tmp/audio.mp3', size = 5, mtime_sec = 3, mtime_nsec = 4 })
+        .. '\n'
+)
+assert(
+    vim.wait(1000, function()
+        return #opened_paths == 3
+    end),
+    'opens an unchanged remote preview from the local cache'
+)
+equal(opened_paths[2], opened_paths[3], 'reuses the same local cache path for unchanged previews')
+equal('RemoteSSHPreviewDecision', rpc_requests[#rpc_requests].name, 'notifies the remote preview bridge on cache hits')
+equal(true, rpc_requests[#rpc_requests].args[2], 'reports cache hits to the remote preview bridge')
+request.options.stdout(nil, 'NVIM_REMOTE_PREVIEW_DATA:' .. session_token .. ':preview3:5\nzzzzz')
+request.options.stdout(nil, 'NVIM_REMOTE_PREVIEW_END:' .. session_token .. ':preview3\n')
+local cached_preview_path = opened_paths[3]
 equal('-p', system_arguments[separator_index - 2], 'passes an explicit SSH port')
 equal('2222', system_arguments[separator_index - 1], 'passes the SSH port value')
 assert(system_arguments[separator_index + 1] == 'dev@example.com', 'passes the SSH destination as one argument')
@@ -274,9 +373,44 @@ equal(nil, request.options.env, 'default authentication does not install an askp
 request.on_exit({ code = 0, signal = 0 })
 vim.wait(20)
 
+require('remote-ssh').connect('ssh://dev@example.com:2222')
+request = pending[#pending]
+session_token = assert(session_token_of(request))
+request.options.stdout(nil, 'NVIM_REMOTE_READY:' .. session_token .. '\n')
+assert(
+    vim.wait(1000, function()
+        return #attach_commands == 2
+    end),
+    'reattaches to the same host for persistent preview cache validation'
+)
+request.options.stdout(
+    nil,
+    'NVIM_REMOTE_PREVIEW_START:'
+        .. session_token
+        .. ':'
+        .. vim.json.encode({ id = 'preview4', path = '/tmp/audio.mp3', size = 5, mtime_sec = 3, mtime_nsec = 4 })
+        .. '\n'
+)
+assert(
+    vim.wait(1000, function()
+        return #opened_paths == 4
+    end),
+    'opens an unchanged remote preview from cache across reconnects'
+)
+equal(cached_preview_path, opened_paths[4], 'reuses the same cache path after reconnecting to the same host')
+equal('RemoteSSHPreviewDecision', rpc_requests[#rpc_requests].name, 'notifies remote bridge after reconnect cache hits')
+equal(true, rpc_requests[#rpc_requests].args[2], 'reports reconnect cache hits to the remote preview bridge')
+request.on_exit({ code = 0, signal = 0 })
+vim.wait(20)
+
 require('remote-ssh').setup({
     allow_external_ui = true,
     askpass_command = vim.v.progpath,
+    preview = {
+        enabled = false,
+        keymap = '<leader>op',
+        max_size = 4096,
+    },
 })
 vim.api.nvim_cmd({
     cmd = 'RemoteSSHConnect',
@@ -296,12 +430,21 @@ assert(
 )
 equal(vim.v.progpath, request.options.env.SSH_ASKPASS, 'password mode selects the configured askpass helper')
 equal('force', request.options.env.SSH_ASKPASS_REQUIRE, 'password mode forces askpass away from the TUI')
+separator_index = nil
+for index, argument in ipairs(request.arguments) do
+    if argument == '--' then
+        separator_index = index
+    end
+end
+equal('0', request.arguments[separator_index + 11], 'can disable remote preview')
+equal('3c6c65616465723e6f70', request.arguments[separator_index + 12], 'passes a shell-safe remote preview keymap')
+equal('4096', request.arguments[separator_index + 13], 'passes a configured preview size limit')
 request.on_exit({ code = 255, signal = 0 })
 vim.wait(20)
 
 require('remote-ssh').connect('ssh://corrupt-cache.invalid')
 request = pending[#pending]
-local corrupt_cache_token = request.arguments[#request.arguments - 4]
+local corrupt_cache_token = session_token_of(request)
 request.options.stdout(nil, 'NVIM_REMOTE_ASSET:' .. corrupt_cache_token .. ':nvim-linux-x86_64.tar.gz\n')
 assert(
     vim.wait(1000, function()
@@ -353,7 +496,7 @@ assert(
     'retains diagnostic logs after a failed connection'
 )
 local attaches_before = #attach_commands
-request.options.stdout(nil, 'NVIM_REMOTE_READY:' .. request.arguments[#request.arguments - 4] .. '\n')
+request.options.stdout(nil, 'NVIM_REMOTE_READY:' .. session_token_of(request) .. '\n')
 vim.wait(20)
 equal(attaches_before, #attach_commands, 'ignores readiness after the SSH process exits')
 
@@ -363,7 +506,7 @@ require('remote-ssh').cancel()
 require('remote-ssh').connect('ssh://cancel-two.invalid')
 local reconnect_request = pending[#pending]
 cancelled_request.on_exit({ code = 143, signal = 15 })
-local reconnect_token = reconnect_request.arguments[#reconnect_request.arguments - 4]
+local reconnect_token = session_token_of(reconnect_request)
 reconnect_request.options.stdout(nil, 'NVIM_REMOTE_READY:' .. reconnect_token .. '\n')
 assert(
     vim.wait(1000, function()
@@ -382,7 +525,7 @@ end
 local kills_before_attach_failure = kills
 require('remote-ssh').connect('ssh://attach-failure.invalid')
 request = pending[#pending]
-local attach_failure_token = request.arguments[#request.arguments - 4]
+local attach_failure_token = session_token_of(request)
 request.options.stdout(nil, 'NVIM_REMOTE_READY:' .. attach_failure_token .. '\n')
 assert(
     vim.wait(1000, function()
@@ -414,6 +557,9 @@ require('remote-ssh').setup({ allow_external_ui = true })
 vim.system = original_system
 vim.cmd = original_cmd
 vim.notify = original_notify
+vim.ui.open = original_ui_open
+vim.fn.sockconnect = original_sockconnect
+vim.rpcnotify = original_rpcnotify
 transfer.provide = original_transfer_provide
 transfer.cancel = original_transfer_cancel
 transfer.invalidate = original_transfer_invalidate

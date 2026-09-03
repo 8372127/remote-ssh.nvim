@@ -1,6 +1,7 @@
 local askpass = require('remote-ssh.askpass')
 local bootstrap = require('remote-ssh.bootstrap')
 local config = require('remote-ssh.config')
+local preview = require('remote-ssh.preview')
 local ssh = require('remote-ssh.ssh')
 local transfer = require('remote-ssh.transfer')
 local uri = require('remote-ssh.uri')
@@ -73,6 +74,11 @@ end
 
 local function cleanup(session)
     cancel_transfer(session)
+    preview.cancel_all(session)
+    if session.rpc_channel then
+        pcall(vim.fn.chanclose, session.rpc_channel)
+        session.rpc_channel = nil
+    end
     if session.timer then
         session.timer:stop()
         session.timer:close()
@@ -150,7 +156,145 @@ local function provide_asset(session, version_string, asset)
     session.transfer = handle_or_error
 end
 
-local function attach(session)
+local attach
+
+local function schedule_active(session, callback)
+    vim.schedule(function()
+        if active == session then
+            callback()
+        end
+    end)
+end
+
+local function handle_preview_line(session, line)
+    local start_marker = 'NVIM_REMOTE_PREVIEW_START:' .. session.token .. ':'
+    local data_marker = 'NVIM_REMOTE_PREVIEW_DATA:' .. session.token .. ':'
+    local end_marker = 'NVIM_REMOTE_PREVIEW_END:' .. session.token .. ':'
+    local error_marker = 'NVIM_REMOTE_PREVIEW_ERROR:' .. session.token .. ':'
+
+    local start_index = line:find(start_marker, 1, true)
+    if start_index then
+        local payload = line:sub(start_index + #start_marker)
+        schedule_active(session, function()
+            preview.start(session, payload)
+        end)
+        return true
+    end
+
+    local data_index = line:find(data_marker, 1, true)
+    if data_index then
+        local payload = line:sub(data_index + #data_marker)
+        local id, length = payload:match('^([^:]+):(%d+)$')
+        length = length and tonumber(length) or nil
+        if id and length and length > 0 then
+            session.preview_stream = {
+                id = id,
+                remaining = length,
+            }
+        end
+        return true
+    end
+
+    local end_index = line:find(end_marker, 1, true)
+    if end_index then
+        local id = line:sub(end_index + #end_marker)
+        schedule_active(session, function()
+            preview.finish(session, id)
+        end)
+        return true
+    end
+
+    local error_index = line:find(error_marker, 1, true)
+    if error_index then
+        local payload = line:sub(error_index + #error_marker)
+        schedule_active(session, function()
+            preview.remote_error(session, payload)
+        end)
+        return true
+    end
+
+    return false
+end
+
+local function handle_stdout_line(session, line)
+    if line:sub(-1) == '\r' then
+        line = line:sub(1, -2)
+    end
+
+    if handle_preview_line(session, line) then
+        return
+    end
+
+    local asset_marker = 'NVIM_REMOTE_ASSET:' .. session.token .. ':'
+    local asset_start = line:find(asset_marker, 1, true)
+    if session.state == 'starting' and not session.asset_requested and asset_start then
+        local asset = line:sub(asset_start + #asset_marker)
+        session.asset_requested = true
+        vim.schedule(function()
+            if active == session and session.state == 'starting' then
+                provide_asset(session, session.version, asset)
+            end
+        end)
+        return
+    end
+
+    local ready_marker = 'NVIM_REMOTE_READY:' .. session.token
+    if session.state == 'starting' and line:find(ready_marker, 1, true) then
+        vim.schedule(function()
+            attach(session)
+        end)
+        return
+    end
+
+    append_log(session, 'stdout', line)
+end
+
+local function handle_stdout(session, error_message, data)
+    if error_message then
+        append_log(session, 'stdout', error_message)
+    end
+    if not data or data == '' then
+        return
+    end
+
+    session.stdout_buffer = (session.stdout_buffer or '') .. data
+    while true do
+        if session.preview_stream then
+            if #session.stdout_buffer == 0 then
+                break
+            end
+            local length = math.min(#session.stdout_buffer, session.preview_stream.remaining)
+            local chunk = session.stdout_buffer:sub(1, length)
+            session.stdout_buffer = session.stdout_buffer:sub(length + 1)
+            session.preview_stream.remaining = session.preview_stream.remaining - length
+            local id = session.preview_stream.id
+            schedule_active(session, function()
+                preview.data(session, id, chunk)
+            end)
+            if session.preview_stream.remaining == 0 then
+                session.preview_stream = nil
+            end
+            if #session.stdout_buffer == 0 then
+                break
+            end
+        else
+            local line_end = session.stdout_buffer:find('\n', 1, true)
+            if not line_end then
+                break
+            end
+            local line = session.stdout_buffer:sub(1, line_end - 1)
+            session.stdout_buffer = session.stdout_buffer:sub(line_end + 1)
+            handle_stdout_line(session, line)
+        end
+    end
+
+    if not session.preview_stream and #session.stdout_buffer > 1024 * 1024 then
+        append_log(session, 'stdout', session.stdout_buffer:sub(1, 4096))
+        session.stdout_buffer = ''
+    end
+end
+
+attach = function(session)
     if active ~= session or session.state ~= 'starting' then
         return
     end
@@ -163,6 +307,16 @@ local function attach(session)
     end
 
     notify('Connected to ' .. session.destination.display)
+    if session.preview_options and session.preview_options.enabled then
+        local rpc_options = { rpc = true }
+        local endpoint_type = vim.fn.has('win32') == 1 and 'tcp' or 'pipe'
+        local ok_channel, channel = pcall(vim.fn.sockconnect, endpoint_type, session.endpoint.address, rpc_options)
+        if ok_channel and channel > 0 then
+            session.rpc_channel = channel
+        else
+            notify('Unable to attach the local preview control channel', vim.log.levels.WARN)
+        end
+    end
     local ok, error_message = pcall(vim.cmd, {
         cmd = 'connect',
         args = { session.endpoint.address },
@@ -248,19 +402,17 @@ function M.connect(input, connect_options)
         version = version_string,
     })
     local script = bootstrap.payload(session_token)
-    local marker = 'NVIM_REMOTE_READY:' .. session_token
-    local asset_marker = 'NVIM_REMOTE_ASSET:' .. session_token .. ':'
-    local stdout_buffer = ''
-
     local session = {
         curl_command = options.curl_command,
         destination = destination,
         endpoint = endpoint,
         log_limit = options.log_limit,
         logs = {},
+        preview_options = options.preview,
         state = 'starting',
         builtin_tui = builtin_tui,
         token = session_token,
+        version = version_string,
     }
     active = session
     latest_token = session_token
@@ -285,33 +437,9 @@ function M.connect(input, connect_options)
     local system_ok, process_or_error = pcall(vim.system, arguments, {
         stdin = true,
         env = environment,
-        text = true,
+        text = false,
         stdout = function(error_message, data)
-            if error_message then
-                append_log(session, 'stdout', error_message)
-            end
-            append_log(session, 'stdout', data)
-            stdout_buffer = stdout_buffer .. (data or '')
-            local asset_start = stdout_buffer:find(asset_marker, 1, true)
-            if session.state == 'starting' and not session.asset_requested and asset_start then
-                local asset_end = stdout_buffer:find('\n', asset_start + #asset_marker, true)
-                if asset_end then
-                    local asset = stdout_buffer:sub(asset_start + #asset_marker, asset_end - 1):gsub('\r$', '')
-                    session.asset_requested = true
-                    vim.schedule(function()
-                        if active == session and session.state == 'starting' then
-                            provide_asset(session, version_string, asset)
-                        end
-                    end)
-                end
-            end
-            if session.state == 'starting' and stdout_buffer:find(marker, 1, true) then
-                vim.schedule(function()
-                    attach(session)
-                end)
-            elseif #stdout_buffer > 4096 then
-                stdout_buffer = stdout_buffer:sub(-2048)
-            end
+            handle_stdout(session, error_message, data)
         end,
         stderr = function(error_message, data)
             if error_message then

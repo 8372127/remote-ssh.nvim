@@ -75,12 +75,12 @@ Run `:RemoteSSHConnect` without an argument to select a concrete `Host` entry
 declared directly in `~/.ssh/config`. SSH options such as `IdentityFile`,
 `ProxyJump`, and host aliases remain the responsibility of OpenSSH.
 
-The plugin reuses a stable Neovim 0.9 or newer from the remote `PATH` when the
+The plugin reuses a stable Neovim from the remote `PATH` only when the
 local TUI's `api_level` is inside the remote Neovim's documented
 `[api_compatible, api_level]` range. This follows Neovim's backwards-compatible
-API contract while preserving `NVIM_APPNAME` isolation, which was introduced
-in Neovim 0.9. Different patch versions with the same compatible API level do
-not require another installation.
+API contract while preserving `NVIM_APPNAME` isolation. Different patch
+versions with the same compatible API level do not require another
+installation.
 
 When no compatible remote Neovim exists, the first connection downloads the
 remote platform's exact local Neovim version, streams it through the existing
@@ -105,6 +105,33 @@ Cancel a connection that is still starting:
 ```vim
 :RemoteSSHCancel
 ```
+
+Preview a media file from an attached remote session on the local machine:
+
+```vim
+:RemoteSSHPreview %
+:RemoteSSHPreview /home/user/image.png
+```
+
+The remote Neovim streams the file back over the existing SSH connection with
+binary chunks. The local client writes it below `stdpath('cache')/remote-ssh`
+and opens the cached copy with the local `vim.ui.open()`, so password-based
+connections do not require a second SSH authentication prompt. Unchanged
+files are opened from the local cache.
+
+Set `preview.keymap` to install a normal-mode mapping inside each attached
+remote Neovim session:
+
+```lua
+require('remote-ssh').setup({
+    preview = {
+        keymap = '<leader>op',
+    },
+})
+```
+
+The mapping previews the nvim-tree node under the cursor when nvim-tree is
+available, otherwise it previews the current buffer file.
 
 Run diagnostics with:
 
@@ -132,6 +159,11 @@ require('remote-ssh').setup({
     remote_appname = 'nvim-remote',
     log_limit = 200,
     allow_external_ui = false,
+    preview = {
+        enabled = true,
+        keymap = '',
+        max_size = 100 * 1024 * 1024,
+    },
 })
 ```
 
