@@ -75,18 +75,21 @@ Run `:RemoteSSHConnect` without an argument to select a concrete `Host` entry
 declared directly in `~/.ssh/config`. SSH options such as `IdentityFile`,
 `ProxyJump`, and host aliases remain the responsibility of OpenSSH.
 
-The plugin reuses a stable Neovim from the remote `PATH` only when the
-local TUI's `api_level` is inside the remote Neovim's documented
+The remote bootstrap sources `~/.profile` before inspecting `PATH`. The plugin
+reuses a stable Neovim from that environment only when the local TUI's
+`api_level` is inside the remote Neovim's documented
 `[api_compatible, api_level]` range. This follows Neovim's backwards-compatible
-API contract while preserving `NVIM_APPNAME` isolation. Different patch
-versions with the same compatible API level do not require another
-installation.
+API contract. A reused remote Neovim keeps the profile's environment and loads
+its normal remote configuration, including any `NVIM_APPNAME` or
+`XDG_CONFIG_HOME` selected by the profile. Different patch versions with the
+same compatible API level do not require another installation.
 
 When no compatible remote Neovim exists, the first connection downloads the
 remote platform's exact local Neovim version, streams it through the existing
-SSH connection, and installs it. Downloads are cached under
-`stdpath('cache')/remote-ssh/downloads`. Remote state is isolated with
-`NVIM_APPNAME=nvim-remote`:
+SSH connection, and installs it. Only this managed fallback is isolated with
+the configured `remote_appname`. Downloads are cached under
+`stdpath('cache')/remote-ssh/downloads`. With the default
+`NVIM_APPNAME=nvim-remote`, its state is stored under:
 
 ```text
 ~/.config/nvim-remote/

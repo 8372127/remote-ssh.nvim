@@ -17,6 +17,19 @@ bootstrap_file=$9
 rm -f "$bootstrap_file"
 
 umask 077
+
+profile_status=0
+if [ -r "$HOME/.profile" ]; then
+    set +e
+    set +u
+    . "$HOME/.profile" || profile_status=$?
+    set -u
+    set -e
+    if [ "$profile_status" -ne 0 ]; then
+        printf 'remote profile exited with status %s: %s\n' "$profile_status" "$HOME/.profile" >&2
+    fi
+fi
+
 main_pid=$$
 connection_parent=
 watchdog=
@@ -49,6 +62,7 @@ data_home=${XDG_DATA_HOME:-"$HOME/.local/share"}
 remote_root="$data_home/$appname"
 install_dir="$remote_root/versions/v$version"
 nvim_bin="$install_dir/bin/nvim"
+remote_nvim=0
 
 version_of() {
     "$1" --version 2>/dev/null | sed -n '1{s/^NVIM v//;p;}'
@@ -59,7 +73,7 @@ is_expected() {
 }
 
 api_metadata_of() {
-    NVIM_APPNAME="$appname" "$1" --headless --clean -u NONE -i NONE \
+    "$1" --headless --clean -u NONE -i NONE \
         --cmd "lua local v=vim.fn.api_info().version; io.stdout:write(string.format('%d:%d:%s:%d:%d:%d\\n', v.api_level, v.api_compatible, tostring(v.api_prerelease), v.major, v.minor, v.patch))" \
         --cmd 'qa!' 2>/dev/null
 }
@@ -96,6 +110,7 @@ is_compatible() {
 
 if command -v nvim >/dev/null 2>&1 && is_compatible "$(command -v nvim)"; then
     nvim_bin=$(command -v nvim)
+    remote_nvim=1
 elif ! is_expected "$nvim_bin"; then
     os=$(uname -s)
     arch=$(uname -m)
@@ -528,14 +543,26 @@ trap 'abort 143' TERM
 unset VIMRUNTIME
 if [ "$preview_enabled" = 1 ]; then
     write_preview_bridge
-    NVIM_APPNAME="$appname" \
+    if [ "$remote_nvim" -eq 1 ]; then
         REMOTE_SSH_TOKEN="$token" \
-        REMOTE_SSH_PREVIEW_FILE="$preview_file" \
-        REMOTE_SSH_PREVIEW_KEYMAP_HEX="$preview_keymap_hex" \
-        REMOTE_SSH_PREVIEW_MAX_SIZE="$preview_max_size" \
-        "$nvim_bin" --headless --cmd 'lua dofile(vim.env.REMOTE_SSH_PREVIEW_FILE)' --listen "$socket" &
+            REMOTE_SSH_PREVIEW_FILE="$preview_file" \
+            REMOTE_SSH_PREVIEW_KEYMAP_HEX="$preview_keymap_hex" \
+            REMOTE_SSH_PREVIEW_MAX_SIZE="$preview_max_size" \
+            "$nvim_bin" --headless --cmd 'lua dofile(vim.env.REMOTE_SSH_PREVIEW_FILE)' --listen "$socket" &
+    else
+        NVIM_APPNAME="$appname" \
+            REMOTE_SSH_TOKEN="$token" \
+            REMOTE_SSH_PREVIEW_FILE="$preview_file" \
+            REMOTE_SSH_PREVIEW_KEYMAP_HEX="$preview_keymap_hex" \
+            REMOTE_SSH_PREVIEW_MAX_SIZE="$preview_max_size" \
+            "$nvim_bin" --headless --cmd 'lua dofile(vim.env.REMOTE_SSH_PREVIEW_FILE)' --listen "$socket" &
+    fi
 else
-    NVIM_APPNAME="$appname" "$nvim_bin" --headless --listen "$socket" &
+    if [ "$remote_nvim" -eq 1 ]; then
+        "$nvim_bin" --headless --listen "$socket" &
+    else
+        NVIM_APPNAME="$appname" "$nvim_bin" --headless --listen "$socket" &
+    fi
 fi
 child=$!
 

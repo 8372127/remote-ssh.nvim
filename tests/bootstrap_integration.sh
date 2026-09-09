@@ -47,6 +47,9 @@ case "$*" in
     exit 0
     ;;
 esac
+if [ -n "${FAKE_NVIM_ENV_OUTPUT:-}" ]; then
+    printf '%s\n' "${NVIM_APPNAME-unset}" > "$FAKE_NVIM_ENV_OUTPUT"
+fi
 if [ -n "${FAKE_NVIM_SIGNAL_PREFIX:-}" ]; then
     printf '%s\n' "$$" > "$FAKE_NVIM_SIGNAL_PREFIX.pid"
     : > "$FAKE_NVIM_SIGNAL_PREFIX.started"
@@ -108,6 +111,26 @@ fourth_status=$?
 grep -q '^NVIM_REMOTE_ASSET:token-four:' "$root/four.out" || { printf 'stale-guard recovery did not request an archive\n' >&2; exit 43; }
 [ ! -e "$root/data/nvim-remote/.install-v9.9.9.lock" ] || { printf 'stale-guard recovery leaked lock\n' >&2; exit 44; }
 [ ! -e "$root/data/nvim-remote/.install-v9.9.9.guard" ] || { printf 'stale guard was not recovered\n' >&2; exit 45; }
+
+mkdir -p "$root/profile-home"
+cat > "$root/profile-home/.profile" <<EOF
+PATH='$root/payload/nvim-test/bin':\$PATH
+export PATH
+NVIM_APPNAME=profile-nvim
+export NVIM_APPNAME
+EOF
+HOME="$root/profile-home" \
+XDG_DATA_HOME="$root/data" \
+PATH="$tool_path" \
+REAL_BOOTSTRAP="$bootstrap" \
+FAKE_NVIM_METADATA=14:0:false:0:12:1 \
+FAKE_NVIM_ENV_OUTPUT="$root/profile-appname.out" \
+    sh "$root/runner" token-profile 9.9.9 14 nvim-profile "$root/token-profile.sock" 1 - 104857600 \
+        "$root/token-profile-bootstrap" > "$root/profile.out" 2> "$root/profile.err"
+profile_status=$?
+[ "$profile_status" -eq 42 ] || { printf 'unexpected profile Neovim status: %s\n' "$profile_status" >&2; cat "$root/profile.err" >&2; exit 48; }
+! grep -q '^NVIM_REMOTE_ASSET:' "$root/profile.out" || { printf 'profile Neovim requested an archive\n' >&2; exit 49; }
+[ "$(cat "$root/profile-appname.out")" = profile-nvim ] || { printf 'profile NVIM_APPNAME was not preserved\n' >&2; exit 50; }
 
 HOME="$root/home" \
 XDG_DATA_HOME="$root/data" \

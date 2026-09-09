@@ -99,6 +99,8 @@ assert(script:find('REMOTE_SSH_PREVIEW_KEYMAP_HEX', 1, true), 'bootstrap can ins
 assert(script:find('hex_decode', 1, true), 'bootstrap decodes shell-safe remote preview keymaps')
 assert(script:find("require, 'nvim-tree.api'", 1, true), 'preview keymap supports nvim-tree cursor paths')
 assert(script:find('vim.fn.api_info().version', 1, true), 'bootstrap reads official API compatibility metadata')
+assert(script:find('. "$HOME/.profile"', 1, true), 'bootstrap loads the remote profile')
+assert(script:find('remote_nvim=1', 1, true), 'bootstrap distinguishes a remote Neovim from its fallback')
 assert(script:find('remote_minor" -lt 12', 1, true), 'bootstrap requires a remote Neovim 0.12 floor')
 assert(script:find('remote_api_prerelease" = false', 1, true), 'bootstrap rejects unstable remote APIs')
 assert(script:find('remote_api_compatible" -le "$local_api_level', 1, true), 'bootstrap checks the remote API floor')

@@ -110,7 +110,8 @@ server_alive_interval, server_alive_count_max ~
     OpenSSH keepalive settings for the persistent tunnel.
 
 remote_appname ~
-    Value assigned to |$NVIM_APPNAME| on the remote host.
+    Value assigned to |$NVIM_APPNAME| for a managed fallback Nvim. A compatible
+    Nvim discovered in the remote profile keeps its existing environment.
 
 log_limit ~
     Maximum number of in-memory diagnostic lines retained for the active or
@@ -134,18 +135,22 @@ preview.max_size ~
 ==============================================================================
 4. Remote environment                               *remote-ssh-environment*
 
-A stable Nvim is reused from the remote PATH only when the local TUI's
-`api_level` is inside the remote Nvim's `[api_compatible, api_level]` range.
-This is the compatibility range guaranteed by Nvim's stable API contract.
-Different patch versions with the same compatible API level do not require
-another installation.
+A remote ~/.profile is sourced before inspecting PATH. A stable Nvim is reused
+from that environment only when the local TUI's `api_level` is inside the
+remote Nvim's `[api_compatible, api_level]` range. This is the compatibility
+range guaranteed by Nvim's stable API contract. Different patch versions with
+the same compatible API level do not require another installation. A reused
+Nvim keeps the profile's environment and loads its normal remote configuration,
+including the profile's |$NVIM_APPNAME| and |$XDG_CONFIG_HOME| values when
+present.
 Otherwise the local client downloads the exact local version from GitHub
 Releases, uploads it over the existing SSH connection, and installs it under: >text
 
     ~/.local/share/nvim-remote/versions/v{version}/
 <
 
-The remote process uses `NVIM_APPNAME=nvim-remote`, which normally resolves to: >text
+Only this managed fallback uses `NVIM_APPNAME=nvim-remote`, which normally
+resolves to: >text
 
     ~/.config/nvim-remote/
     ~/.local/share/nvim-remote/
